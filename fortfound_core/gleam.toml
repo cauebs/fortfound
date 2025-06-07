@@ -4,10 +4,13 @@ description = "Clean room reimplementation of Zachtronics' Fortune's Foundation 
 licences = ["AGPL-3.0-or-later"]
 repository = { type = "github", user = "cauebs", repo = "fortfound" }
 links = [{ title = "Home page", href = "https://cauebs.github.io/fortfound" }]
-dev-dependencies = { startest = ">= 0.6.0 and < 1.0.0" }
 
 [dependencies]
 gleam_stdlib = ">= 0.56.0 and < 1.0.0"
-gleam_otp = ">= 0.16.1 and < 1.0.0"
 prng = ">= 4.0.1 and < 5.0.0"
 gleam_time = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 0.16.1 and < 1.0.0"
+
+[dev-dependencies]
+startest = ">= 0.6.0 and < 1.0.0"
+birdie = ">= 1.2.7 and < 2.0.0"

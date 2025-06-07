@@ -8,9 +8,11 @@ links = [{ title = "Home page", href = "https://cauebs.github.io/fortfound" }]
 dev-dependencies = { lustre_dev_tools = ">= 1.7.0 and < 2.0.0" }
 
 [dependencies]
-gleam_stdlib = ">= 0.56.0 and < 1.0.0"
-lustre = { git = "https://github.com/lustre-labs/lustre", ref = "main" }
-modem = ">= 2.0.1 and < 3.0.0"
+gleam_stdlib = ">= 0.59.0 and < 1.0.0"
+lustre = ">= 5.0.1 and < 6.0.0"
+modem = ">= 2.0.2 and < 3.0.0"
 fortfound_core = { path = "../fortfound_core" }
 glector = ">= 1.1.0 and < 2.0.0"
-lustre_animation = { git = "https://github.com/cauebs/lustre_animation", ref = "main" }
+# lustre_animation = { git = "https://github.com/cauebs/lustre_animation", ref = "main" }
+lustre_animation = { path = "../lustre_animation"}
+gleam_community_maths = ">= 2.0.0 and < 3.0.0"

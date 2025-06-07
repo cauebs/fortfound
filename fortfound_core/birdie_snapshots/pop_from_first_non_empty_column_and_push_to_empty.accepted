@@ -1,0 +1,13 @@
+---
+version: 1.2.7
+title: pop from first non-empty column and push to empty
+file: ./test/tableau_test.gleam
+test_name: pop_push_test
+---
+  6 |  13 |  20 | ♦ 7 | ♠ 2 |   0 | ♠ 9 | ♣ 4 | ♣ J | ♥ 6 | ♥ K
+  5 |  12 |  19 | ♦ 6 | ♦ K |     | ♠ 8 | ♣ 3 | ♣10 | ♥ 5 | ♥ Q
+  4 |  11 |  18 | ♦ 5 | ♦ Q |     | ♠ 7 | ♣ 2 | ♣ 9 | ♥ 4 | ♥ J
+  3 |  10 |  17 | ♦ 4 | ♦ J |     | ♠ 6 | ♠ K | ♣ 8 | ♥ 3 | ♥10
+  2 |   9 |  16 | ♦ 3 | ♦10 |     | ♠ 5 | ♠ Q | ♣ 7 | ♥ 2 | ♥ 9
+  1 |   8 |  15 | ♦ 2 | ♦ 9 |     | ♠ 4 | ♠ J | ♣ 6 | ♣ K | ♥ 8
+    |   7 |  14 |  21 | ♦ 8 |     | ♠ 3 | ♠10 | ♣ 5 | ♣ Q | ♥ 7

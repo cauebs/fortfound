@@ -1,6 +1,4 @@
-import fortfound_core/model.{
-  type Card, Clubs, Coins, Cups, MajorArcana, MinorArcana, Swords,
-}
+import fortfound_core/card.{type Card}
 
 pub const transparent = "#00000000"
 
@@ -37,17 +35,17 @@ pub const button_text = beige
 
 pub fn card_stroke(card: Card) -> String {
   case card {
-    MajorArcana(_) -> major_arcana_stroke
-    MinorArcana(Clubs, _) -> clubs
-    MinorArcana(Coins, _) -> coins
-    MinorArcana(Cups, _) -> cups
-    MinorArcana(Swords, _) -> swords
+    card.MajorArcana(_) -> major_arcana_stroke
+    card.MinorArcana(card.Clubs(_)) -> clubs
+    card.MinorArcana(card.Coins(_)) -> coins
+    card.MinorArcana(card.Cups(_)) -> cups
+    card.MinorArcana(card.Swords(_)) -> swords
   }
 }
 
 pub fn card_fill(card: Card) -> String {
   case card {
-    MajorArcana(_) -> major_arcana_fill
-    MinorArcana(..) -> minor_arcana_fill
+    card.MajorArcana(_) -> major_arcana_fill
+    card.MinorArcana(..) -> minor_arcana_fill
   }
 }

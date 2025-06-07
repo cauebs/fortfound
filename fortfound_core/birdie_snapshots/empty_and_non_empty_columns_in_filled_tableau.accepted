@@ -1,0 +1,7 @@
+---
+version: 1.2.7
+title: empty and non-empty columns in filled tableau
+file: ./test/tableau_test.gleam
+test_name: empty_and_non_empty_columns_test
+---
+#([ColumnIndex(5)], [ColumnIndex(0), ColumnIndex(1), ColumnIndex(2), ColumnIndex(3), ColumnIndex(4), ColumnIndex(6), ColumnIndex(7), ColumnIndex(8), ColumnIndex(9), ColumnIndex(10)])

@@ -1,0 +1,6 @@
+---
+version: 1.2.7
+title: empty tableau
+file: ./test/tableau_test.gleam
+test_name: empty_tableau_test
+---

@@ -1,29 +1,28 @@
+import fortfound_app/animations.{
+  type Vector3, card_draw_animations, full_move_animations,
+}
 import fortfound_app/layout.{type Layout}
 import fortfound_app/palette
 import fortfound_app/special_characters.{suit_icon}
-import fortfound_core/game.{empty_game, game_from_seed, get_card}
-import fortfound_core/model.{
-  type Card, type FullMove, type Game, type Location, type MajorArcanaFoundation,
-  type MinorArcanaFoundation, type MoveToFoundation, type PartialMove, type Suit,
-  BlockingMinorArcanaFoundation, Clubs, Coins, Column, Cups, Game, HistoryStep,
-  MajorArcana, MinorArcana, MoveRequest, State, Swords,
-}
+import fortfound_core/card.{type Card}
+import fortfound_core/foundation
+import fortfound_core/game.{type Game, empty_game, game_from_seed}
 import fortfound_core/rng.{type Seed}
 import fortfound_core/scenarios
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
 import gleam/pair
 import gleam/result
 import gleam/string
 import gleam/uri.{type Uri}
 import glector.{type Vector2, Vector2}
 import lustre
-import lustre/animation.{type Animation, type Animations}
+import lustre/animation.{type Animations}
 import lustre/attribute.{type Attribute, attribute as attr}
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
@@ -45,26 +44,16 @@ type SelectedCard {
     position: Vector2,
     pointer_offset: Vector2,
   )
-  Highlighted(card: Card, location: Location)
+  Selected(card: Card, at: Location)
 }
-
-type AnimatedPosition {
-  AnimatedPosition(xy: Vector2, z: Int)
-}
-
-type CardAnimations =
-  Animations(Card, AnimatedPosition)
-
-type CardAnimation =
-  Animation(AnimatedPosition)
 
 type Model {
   Model(
     game: Game,
     selected: Option(SelectedCard),
-    animations: CardAnimations,
-    displaying_help: Bool,
     layout: Layout,
+    animations: Animations(Card, Vector3),
+    displaying_help: Bool,
   )
 }
 
@@ -79,9 +68,9 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     Model(
       game:,
       selected: None,
+      layout: layout.get_layout(),
       animations: animation.new(),
       displaying_help: False,
-      layout: layout.get_layout(),
     ),
     effect.none(),
   )
@@ -106,6 +95,14 @@ type Scenario {
   Specific(Seed)
 }
 
+fn scenario_to_seed(scenario: Scenario) -> Seed {
+  case scenario {
+    Random -> scenarios.random_winnable_scenario()
+    Daily -> scenarios.current_daily_scenario()
+    Specific(seed) -> seed
+  }
+}
+
 type Msg {
   RequestedNewGame(Scenario)
   PressedRestart
@@ -118,35 +115,62 @@ type Msg {
   AnimationTick(Float)
 }
 
-fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
-  let input_allowed = list.is_empty(animation.ids(model.animations))
+type InputMode {
+  InputBlocked
+  InputAllowed
+}
 
-  let #(new_model, effect) = case input_allowed, msg {
+fn get_input_mode(animations: Animations(id, a)) -> InputMode {
+  case animation.ids(animations) {
+    [] -> InputAllowed
+    _ -> InputBlocked
+  }
+}
+
+fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
+  let input_mode = get_input_mode(model.animations)
+
+  let #(model, effect) = case input_mode, msg {
     _, RequestedNewGame(scenario) -> {
-      let seed = case scenario {
-        Random -> scenarios.random_winnable_scenario()
-        Daily -> scenarios.current_daily_scenario()
-        Specific(seed) -> seed
-      }
-      let game = game_from_seed(seed)
-      let new_model = model |> start_game(game)
-      #(new_model, set_seed_in_uri(seed))
+      let seed = scenario_to_seed(scenario)
+      model
+      |> start_game(game_from_seed(seed))
+      |> with_effect(set_seed_in_uri(seed))
     }
 
     _, PressedRestart -> {
-      let new_model = case model.game.seed {
-        None -> Model(..model, game: empty_game(), selected: None)
+      case model.game.seed {
+        None -> model
         Some(seed) -> {
-          let game = game_from_seed(seed)
-          model |> start_game(game)
+          model |> start_game(game_from_seed(seed))
         }
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, GrabbedCard(source:, position:, pointer_offset:) -> {
+    _, UndoMove -> {
+      case model.game.history {
+        [HistoryStep(state_before:, ..), ..history] -> {
+          let game = Game(..model.game, state: state_before, history:)
+          Model(..model, game:)
+          |> cancel_animations()
+        }
+        [] -> model
+      }
+      |> with_no_effect()
+    }
+
+    _, PressedHelp ->
+      Model(..model, displaying_help: !model.displaying_help)
+      |> with_no_effect()
+
+    _, AnimationTick(t) ->
+      Model(..model, animations: animation.tick(model.animations, t))
+      |> with_no_effect()
+
+    InputAllowed, GrabbedCard(source:, position:, pointer_offset:) -> {
       let grabbed_card = get_card(model.game.state, source)
-      let new_model = case model.selected, grabbed_card {
+      case model.selected, grabbed_card {
         None, Ok(card) -> {
           let dragging =
             Dragging(card:, from: source, position:, pointer_offset:)
@@ -154,11 +178,11 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         }
         _, _ -> model
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, MovedPointer(position) -> {
-      let new_model = case model.selected {
+    InputAllowed, MovedPointer(position) -> {
+      case model.selected {
         Some(Dragging(..) as dragging) -> {
           let position = glector.add(position, dragging.pointer_offset)
           let dragging = Dragging(..dragging, position:)
@@ -166,72 +190,62 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         }
         _ -> model
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, ReleasedCard(target: None) -> {
-      let new_model = case model.selected {
-        Some(Dragging(..)) -> Model(..model, selected: None)
+    InputAllowed, ReleasedCard(target: None) -> {
+      case model.selected {
+        Some(Dragging(..)) -> model |> clear_selection()
         _ -> model
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, ReleasedCard(target: Some(target)) -> {
-      let new_model = case model.selected {
+    InputAllowed, ReleasedCard(target: Some(target)) -> {
+      case model.selected {
         Some(Dragging(from: source, ..)) -> make_move(model, source, target)
         _ -> model
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, Clicked(Some(target)) -> {
-      let new_model = case model.selected {
-        Some(Highlighted(location: source, ..)) ->
-          make_move(model, source, target)
+    InputAllowed, Clicked(Some(target)) -> {
+      case model.selected {
+        Some(Selected(at: source, ..)) -> make_move(model, source, target)
 
         _ -> {
           case get_card(model.game.state, target) {
             Ok(card) -> {
-              let highlighted = Highlighted(card:, location: target)
-              Model(..model, selected: Some(highlighted))
+              let selected = Selected(card:, at: target)
+              Model(..model, selected: Some(selected))
             }
             Error(Nil) -> model
           }
         }
       }
-      #(new_model, effect.none())
+      |> with_no_effect()
     }
 
-    True, Clicked(None) -> #(Model(..model, selected: None), effect.none())
+    InputAllowed, Clicked(None) ->
+      model |> clear_selection() |> with_no_effect()
 
-    _, UndoMove -> {
-      let new_model = case model.game.history {
-        [HistoryStep(state_before:, ..), ..history] -> {
-          let game = Game(..model.game, state: state_before, history:)
-          Model(..model, game:, animations: animation.new())
-        }
-        [] -> model
-      }
-      #(new_model, effect.none())
-    }
-
-    _, PressedHelp -> #(
-      Model(..model, displaying_help: !model.displaying_help),
-      effect.none(),
-    )
-
-    _, AnimationTick(t) -> #(
-      Model(..model, animations: animation.tick(model.animations, t)),
-      effect.none(),
-    )
-
-    False, _ -> #(model, effect.none())
+    InputBlocked, _ -> model |> with_no_effect()
   }
 
-  let animation_tick_effect =
-    animation.effect(new_model.animations, AnimationTick)
-  #(new_model, effect.batch([effect, animation_tick_effect]))
+  let animation_tick_effect = animation.effect(model.animations, AnimationTick)
+  #(model, effect.batch([effect, animation_tick_effect]))
+}
+
+fn with_effect(model: Model, effect: Effect(Msg)) -> #(Model, Effect(Msg)) {
+  #(model, effect)
+}
+
+fn with_no_effect(model: Model) -> #(Model, Effect(Msg)) {
+  #(model, effect.none())
+}
+
+fn cancel_animations(model: Model) -> Model {
+  Model(..model, animations: animation.new())
 }
 
 fn start_game(model: Model, new_game: Game) -> Model {
@@ -252,238 +266,24 @@ fn set_seed_in_uri(seed: Seed) -> Effect(Msg) {
   modem.push("", Some(query), None)
 }
 
-fn card_draw_animations(
-  columns: Dict(Int, List(Card)),
-  layout: Layout,
-) -> List(#(Card, CardAnimation)) {
-  let start = Vector2(layout.column_x(5, layout), layout.foundations_y)
-
-  columns
-  |> dict.to_list
-  |> list.sort(fn(column1, column2) { int.compare(column1.0, column2.0) })
-  |> list.map(fn(column) {
-    let #(column_index, cards) = column
-
-    cards
-    |> list.reverse
-    |> list.index_map(fn(card, row) {
-      let stop =
-        Vector2(
-          layout.column_x(column_index, layout),
-          layout.tableau_card_y(row, layout),
-        )
-
-      #(card, stop)
-    })
-  })
-  |> list.transpose
-  |> list.flatten
-  |> list.index_map(fn(card_and_stop, index) {
-    let #(card, stop) = card_and_stop
-
-    let interpolator = fn(t) {
-      let xy = glector.lerp(start, stop, t)
-      AnimatedPosition(xy:, z: -index)
-    }
-    let delay = 50.0 *. int.to_float(index)
-    let duration = 200.0
-
-    let animation =
-      animation.create_delayed(after: delay, with: interpolator, for: duration)
-
-    #(card, animation)
-  })
+fn clear_selection(model: Model) -> Model {
+  Model(..model, selected: None)
 }
 
-fn stacked_card_move_animation(
-  move: PartialMove,
-  game_after_move: Game,
-  index_in_stack: Int,
-  moved_stack_size: Int,
-  layout: Layout,
-) -> #(Card, CardAnimation) {
-  let assert #(Column(source_column), Column(target_column)) = #(
-    move.source,
-    move.target,
-  )
-
-  let assert Ok(source_column_size) =
-    game_after_move.state.columns
-    |> dict.get(source_column)
-    |> result.map(list.length)
-
-  let assert Ok(target_column_size) =
-    game_after_move.state.columns
-    |> dict.get(target_column)
-    |> result.map(list.length)
-
-  let row_offset = moved_stack_size - index_in_stack
-  let source_row = source_column_size + row_offset - 1
-  let target_row = target_column_size - row_offset
-
-  let start =
-    AnimatedPosition(
-      xy: Vector2(
-        layout.column_x(source_column, layout),
-        layout.tableau_card_y(source_row, layout),
-      ),
-      z: moved_stack_size - index_in_stack,
-    )
-
-  let stop =
-    AnimatedPosition(
-      xy: Vector2(
-        layout.column_x(target_column, layout),
-        layout.tableau_card_y(target_row, layout),
-      ),
-      z: index_in_stack,
-    )
-
-  let interpolator = stacked_card_move_interpolator(start, stop)
-  let delay = 100.0 *. int.to_float(index_in_stack)
-  let duration = 200.0
-
-  let animation =
-    animation.create_delayed(after: delay, with: interpolator, for: duration)
-
-  #(move.card, animation)
-}
-
-fn stacked_card_move_interpolator(
-  start: AnimatedPosition,
-  stop: AnimatedPosition,
-) -> fn(Float) -> AnimatedPosition {
-  fn(t) {
-    let curvature = 0.5
-
-    let xy =
-      glector.lerp(start.xy, stop.xy, t)
-      |> glector.add(Vector2(0.0, curvature *. t *. { 1.0 -. t }))
-
-    let z =
-      { stop.z - start.z }
-      |> int.to_float
-      |> float.multiply(t)
-      |> float.round
-      |> int.add(start.z)
-
-    AnimatedPosition(xy:, z:)
-  }
-}
-
-fn move_to_foundation_animation(
-  move: MoveToFoundation,
-  game_after_move: Game,
-  index: Int,
-  row_offset: Int,
-  layout: Layout,
-) -> #(Card, CardAnimation) {
-  let start = case move.source {
-    BlockingMinorArcanaFoundation -> {
-      let foundation_center = layout.minor_arcana_foundation_center(layout)
-      layout.center_to_origin(foundation_center, layout.card_size)
-    }
-    Column(i) -> {
-      let assert Ok(column_size) =
-        game_after_move.state.columns
-        |> dict.get(i)
-        |> result.map(list.length)
-      Vector2(
-        x: layout.column_x(i, layout),
-        y: layout.tableau_card_y(column_size + row_offset, layout),
-      )
-    }
-  }
-
-  let assert Ok(stop_x) = case move.card {
-    MajorArcana(value) -> {
-      layout.major_arcana_foundation_xs(layout)
-      |> list.drop(value)
-      |> list.first
-    }
-    MinorArcana(suit:, ..) -> {
-      layout.minor_arcana_foundation_xs(layout)
-      |> list.drop(case suit {
-        Clubs -> 0
-        Coins -> 1
-        Cups -> 2
-        Swords -> 3
-      })
-      |> list.first
-    }
-  }
-  let stop = Vector2(stop_x, layout.foundations_y)
-
-  let interpolator = fn(t) {
-    let xy = glector.lerp(start, stop, t *. t)
-    AnimatedPosition(xy:, z: 0)
-  }
-  let delay = 200.0 *. int.to_float(index)
-  let duration = 400.0
-
-  let animation =
-    animation.create_delayed(after: delay, with: interpolator, for: duration)
-
-  #(move.card, animation)
-}
-
-fn animate_full_move(
-  game_after_move: Game,
-  layout: Layout,
-  animations: CardAnimations,
-  move: FullMove,
-) -> CardAnimations {
-  let new_animations =
-    [
-      move.stacked
-        |> list.index_map(fn(partial_move, index_in_stack) {
-          stacked_card_move_animation(
-            partial_move,
-            game_after_move,
-            index_in_stack,
-            list.length(move.stacked),
-            layout,
-          )
-        }),
-      move.to_foundations
-        |> list.sort(by: fn(move1, move2) {
-          case move1.source, move2.source {
-            BlockingMinorArcanaFoundation, BlockingMinorArcanaFoundation ->
-              order.Eq
-            BlockingMinorArcanaFoundation, Column(_) -> order.Lt
-            Column(_), BlockingMinorArcanaFoundation -> order.Gt
-            Column(i1), Column(i2) -> int.compare(i1, i2)
-          }
-        })
-        |> list.group(by: fn(move) { move.source })
-        |> dict.values
-        |> list.flat_map(fn(moves_from_same_location) {
-          moves_from_same_location
-          |> list.index_map(fn(move, i) {
-            #(move, list.length(moves_from_same_location) - 1 + i)
-          })
-        })
-        |> list.index_map(fn(move_and_offset, index) {
-          let #(move, row_offset) = move_and_offset
-          move_to_foundation_animation(
-            move,
-            game_after_move,
-            index,
-            row_offset,
-            layout,
-          )
-        }),
-    ]
-    |> list.flatten
-
-  animations |> animation.schedule_many(new_animations)
-}
-
-fn make_move(model: Model, source: Location, target: Location) -> Model {
+fn make_move(
+  model: Model,
+  source: game.Location,
+  target: game.Location,
+) -> Model {
   case game.make_move(model.game, MoveRequest(source, target)) {
     Ok(#(move, game_after_move)) -> {
       let animations =
-        animate_full_move(game_after_move, model.layout, model.animations, move)
+        model.animations
+        |> animation.schedule_many(full_move_animations(
+          game_after_move,
+          model.layout,
+          move,
+        ))
       Model(..model, game: game_after_move, selected: None, animations:)
     }
 
@@ -627,24 +427,19 @@ type MouseEvent {
   MouseClick
 }
 
-fn on_mouse_event(event: MouseEvent, msg: fn(Vector2) -> Msg) -> Attribute(Msg) {
-  let event_name = case event {
+fn on_mouse_event(ev: MouseEvent, msg: fn(Vector2) -> Msg) -> Attribute(Msg) {
+  let event_name = case ev {
     MouseDown -> "mousedown"
     MouseMove -> "mousemove"
     MouseUp -> "mouseup"
     MouseClick -> "click"
   }
 
-  event.on(
-    event_name,
-    event.mouse_position()
-      |> decode.map(fn(xy) {
-        let #(x, y) = xy
-        Vector2(x, y)
-      })
-      |> decode.map(screen_to_svg_percentage)
-      |> decode.map(msg),
-  )
+  event.on(event_name, {
+    use x <- decode.field("clientX", decode.float)
+    use y <- decode.field("clientY", decode.float)
+    Vector2(x, y) |> screen_to_svg_percentage() |> msg |> decode.success()
+  })
 }
 
 fn svg(elements: List(Element(Msg)), width: Int, height: Int) -> Element(Msg) {
@@ -671,27 +466,12 @@ fn svg(elements: List(Element(Msg)), width: Int, height: Int) -> Element(Msg) {
   )
 }
 
-fn card_text(card: Card) -> String {
-  case card {
-    MajorArcana(value) -> value |> int.to_string
-    MinorArcana(suit, value) ->
-      case value {
-        1 -> "A"
-        11 -> "J"
-        12 -> "Q"
-        13 -> "K"
-        _ -> value |> int.to_string
-      }
-      <> suit_icon(suit)
-  }
-}
-
 fn view_card(
   card card: Card,
   position position: Vector2,
   scale scale: Float,
   layout layout: Layout,
-  loc loc: Option(Location),
+  loc loc: Option(game.Location),
 ) -> Element(Msg) {
   let size = layout.card_size |> glector.scale(scale)
 
@@ -762,7 +542,7 @@ fn view_dragged_card(
 fn view_slot(
   position: Vector2,
   layout: Layout,
-  target: Option(Location),
+  target: Option(game.Location),
 ) -> Element(Msg) {
   svg.rect(
     [
@@ -857,17 +637,25 @@ fn view_undo_button(card: Card, layout: Layout) -> Element(Msg) {
 }
 
 fn view_major_arcana_foundation(
-  foundation: MajorArcanaFoundation,
+  foundation: foundation.MajorArcanaFoundation,
   layout: Layout,
-  animations: CardAnimations,
+  animations: Animations(Card, a),
 ) -> Element(Msg) {
   let column_xs = layout.major_arcana_foundation_xs(layout)
+
+  let assert Ok(low_slot_x) = list.first(column_xs)
+  let assert Ok(high_slot_x) = list.last(column_xs)
+  let slots =
+    [low_slot_x, high_slot_x]
+    |> list.map(fn(x) {
+      view_slot(Vector2(x, layout.foundations_y), layout, None)
+    })
 
   let view_cards = fn(cards: List(#(Card, Float))) -> List(Element(Msg)) {
     cards
     |> list.filter_map(fn(card_and_x) {
       let #(card, x) = card_and_x
-      case is_animating(card, animations) {
+      case animations |> is_animating(card) {
         True -> Error(Nil)
         False -> {
           let position = Vector2(x, layout.foundations_y)
@@ -876,10 +664,6 @@ fn view_major_arcana_foundation(
       }
     })
   }
-
-  let assert Ok(low_slot_x) = list.first(column_xs)
-  let low_slot =
-    view_slot(Vector2(low_slot_x, layout.foundations_y), layout, None)
 
   let lows = case foundation.low {
     Some(low) -> {
@@ -893,10 +677,6 @@ fn view_major_arcana_foundation(
     }
   }
 
-  let assert Ok(high_slot_x) = list.last(column_xs)
-  let high_slot =
-    view_slot(Vector2(high_slot_x, layout.foundations_y), layout, None)
-
   let highs = case foundation.high {
     Some(high) -> {
       list.range(21, high)
@@ -909,30 +689,28 @@ fn view_major_arcana_foundation(
     }
   }
 
-  svg.g([], list.append([low_slot, ..lows], [high_slot, ..highs]))
+  slots
+  |> list.append(lows)
+  |> list.append(highs)
+  |> svg.g([], _)
 }
 
 fn view_minor_arcana_foundation(
-  foundation: MinorArcanaFoundation,
+  foundation: foundation.MinorArcanaFoundation,
   layout: Layout,
   selected: Option(SelectedCard),
-  animations: CardAnimations,
+  animations: Animations(Card, a),
 ) -> Element(Msg) {
   let column_xs = layout.minor_arcana_foundation_xs(layout)
 
-  let cards = [
-    highest_value_not_animating(Clubs, foundation.clubs, animations),
-    highest_value_not_animating(Coins, foundation.coins, animations),
-    highest_value_not_animating(Cups, foundation.cups, animations),
-    highest_value_not_animating(Swords, foundation.swords, animations),
-  ]
+  let cards = foundation.minor_arcana_foundation_faces(foundation)
 
-  let blocker_or_collider = case foundation.blocker, selected {
+  let blocker_card_or_invisible_collider = case foundation.blocker, selected {
     Some(blocker), Some(Dragging(card: dragging, ..)) if blocker == dragging ->
       element.none()
 
     Some(blocker), _ ->
-      case is_animating(blocker, animations) {
+      case animations |> is_animating(blocker) {
         True -> element.none()
         False -> view_blocker(blocker, layout)
       }
@@ -958,32 +736,16 @@ fn view_minor_arcana_foundation(
     }
   }
 
-  let foundation_cards =
-    cards
-    |> list.zip(column_xs)
-    |> list.map(fn(card_and_x) {
-      let #(card, x) = card_and_x
-      let position = Vector2(x, layout.foundations_y)
-      view_card(card:, position:, scale: 1.0, layout:, loc: None)
-    })
-
-  let elements = list.reverse([blocker_or_collider, ..foundation_cards])
-
-  svg.g([], elements)
-}
-
-fn highest_value_not_animating(
-  suit: Suit,
-  max_value: Int,
-  animations: CardAnimations,
-) -> Card {
-  let assert Ok(card) =
-    list.range(1, max_value)
-    |> list.map(MinorArcana(suit:, value: _))
-    |> list.filter(fn(card) { !list.contains(animation.ids(animations), card) })
-    |> list.last
-
-  card
+  cards
+  |> list.zip(column_xs)
+  |> list.map(fn(card_and_x) {
+    let #(card, x) = card_and_x
+    let position = Vector2(x, layout.foundations_y)
+    view_card(card:, position:, scale: 1.0, layout:, loc: None)
+  })
+  |> list.prepend(blocker_card_or_invisible_collider)
+  |> list.reverse()
+  |> svg.g([], _)
 }
 
 fn view_blocker(card: Card, layout: Layout) -> Element(Msg) {
@@ -1015,7 +777,7 @@ fn view_columns(
   columns: Dict(Int, List(Card)),
   layout: Layout,
   selected: Option(SelectedCard),
-  animations: CardAnimations,
+  animations: Animations(Card, a),
 ) -> Element(Msg) {
   columns
   |> dict.to_list
@@ -1027,14 +789,14 @@ fn view_column(
   column: #(Int, List(Card)),
   layout: Layout,
   selected: Option(SelectedCard),
-  animations: CardAnimations,
+  animations: Animations(Card, a),
 ) -> Element(Msg) {
   let #(column_index, cards) = column
 
   let x = layout.column_x(column_index, layout)
   let loc = Some(Column(column_index))
 
-  let slot = view_slot(Vector2(x, layout.tableau_start.y), layout, loc)
+  let slot = view_slot(Vector2(x, layout.tableau_origin.y), layout, loc)
 
   let cards =
     cards
@@ -1043,12 +805,12 @@ fn view_column(
       let y = layout.tableau_card_y(row, layout)
       let position = case selected {
         Some(Dragging(card: dragging, ..)) if card == dragging -> Error(Nil)
-        Some(Highlighted(card: highlighted, ..)) if card == highlighted -> {
+        Some(Selected(card: selected, ..)) if card == selected -> {
           let offset = Vector2(0.0, layout.stacked_card_y_offset)
           Ok(Vector2(x, y) |> glector.add(offset))
         }
         _ ->
-          case is_animating(card, animations) {
+          case animations |> is_animating(card) {
             True -> Error(Nil)
             False -> Ok(Vector2(x, y))
           }
@@ -1069,17 +831,19 @@ fn view_column(
   svg.g([], [slot, ..cards])
 }
 
-fn is_animating(card: Card, animations: CardAnimations) -> Bool {
+fn is_animating(animations: Animations(Card, a), card: Card) -> Bool {
   animation.ids(animations) |> list.contains(card)
 }
 
 fn view_animated_cards(
-  animations: CardAnimations,
+  animations: Animations(Card, Vector3),
   layout: Layout,
 ) -> Element(Msg) {
-  animation.ids(animations)
-  |> list.map(fn(card) {
-    let assert Ok(position) = animations |> animation.value(card)
+  animations
+  |> animation.values()
+  |> dict.to_list()
+  |> list.map(fn(card_and_position) {
+    let #(card, position) = card_and_position
     #(
       position.z,
       view_card(card:, position: position.xy, scale: 1.0, layout:, loc: None),

@@ -1,0 +1,9 @@
+- test core
+  - card
+  - foundation
+  - tableau
+  - game
+  - rng
+- fix app
+- fix animations
+- win screen
